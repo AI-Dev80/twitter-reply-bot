@@ -1,14 +1,12 @@
-import tweepy
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
+import tweepy
 from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 import schedule
-import time
-import os
 import logging
 from dotenv import load_dotenv
+import os
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
