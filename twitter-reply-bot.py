@@ -185,7 +185,7 @@ def job():
 
 if __name__ == "__main__":
     # Schedule the job to run every 6 minutes
-    schedule.every(4).minutes.do(job)
+    schedule.every(0.1).minutes.do(job)
     while True:
         schedule.run_pending()
         time.sleep(1)
