@@ -43,7 +43,6 @@ def setup_google_sheets():
     except Exception as e:
         logging.error(f"Error opening Google Sheet: {e}")
         return None
-
 # TwitterBot class to manage Twitter interactions and state
 class TwitterBot:
     def __init__(self):
