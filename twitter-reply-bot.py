@@ -28,14 +28,21 @@ TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 # Load OpenAI API key from environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Google Sheets Setup
 def setup_google_sheets():
+    # Retrieve Base64 string from environment
     creds_base64 = os.getenv("GOOGLE_CREDENTIALS_BASE64")
+    
+    # Decode and parse the base64-encoded credentials
     creds_json = base64.b64decode(creds_base64).decode('utf-8')
     creds_data = json.loads(creds_json)
-    credentials = Credentials.from_service_account_info(creds_data)
     
-    # Authorize Google Sheets API
+    # Define the scopes for Google Sheets and Google Drive access
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
+    
+    # Authorize Google Sheets API using the credentials and scopes
+    credentials = Credentials.from_service_account_info(creds_data, scopes=scope)
+    
+    # Authorize and access the Google Sheet
     client = gspread.authorize(credentials)
     sheet = client.open_by_key(os.getenv("GOOGLE_SHEET_ID")).sheet1
     return sheet
