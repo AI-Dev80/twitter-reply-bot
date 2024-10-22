@@ -1,5 +1,6 @@
 import gspread
 from google.oauth2.service_account import Credentials
+
 from datetime import datetime, timedelta
 import tweepy
 from langchain.chat_models import ChatOpenAI
@@ -32,7 +33,7 @@ GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 # Setup Google Sheets API
 def setup_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SHEETS_CREDENTIALS, scope)
+    creds = Credentials.from_service_account_file(GOOGLE_SHEETS_CREDENTIALS, scopes=scope)
     client = gspread.authorize(creds)
     
     try:
@@ -184,7 +185,7 @@ def job():
 
 if __name__ == "__main__":
     # Schedule the job to run every 6 minutes
-    schedule.every(6).minutes.do(job)
+    schedule.every(4).minutes.do(job)
     while True:
         schedule.run_pending()
         time.sleep(1)
