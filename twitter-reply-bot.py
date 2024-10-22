@@ -1,187 +1,190 @@
 import tweepy
-from airtable import Airtable
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 import schedule
 import time
 import os
-
-# Helpful when testing locally
+import logging
 from dotenv import load_dotenv
+
+# Enable logging
+logging.basicConfig(level=logging.INFO)
+
+# Load environment variables from .env file
 load_dotenv()
 
-# Load your Twitter and Airtable API keys (preferably from environment variables, config file, or within the railyway app)
-TWITTER_API_KEY = os.getenv("TWITTER_API_KEY", "YourKey")
-TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET", "YourKey")
-TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN", "YourKey")
-TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET", "YourKey")
-TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "YourKey")
+# Load Twitter API keys from environment variables
+TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
+TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
+TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
+TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 
-AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY", "YourKey")
-AIRTABLE_BASE_KEY = os.getenv("AIRTABLE_BASE_KEY", "YourKey")
-AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME", "YourKey")
+# Load OpenAI API key from environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "YourKey")
+# Load Google Sheets credentials and Google Sheet ID
+GOOGLE_SHEETS_CREDENTIALS = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH", "kibo-cre.json")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
-# TwitterBot class to help us organize our code and manage shared state
+# Setup Google Sheets API
+def setup_google_sheets():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SHEETS_CREDENTIALS, scope)
+    client = gspread.authorize(creds)
+    
+    try:
+        # Open the Google Sheet using the Google Sheet ID
+        sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+        return sheet
+    except Exception as e:
+        logging.error(f"Error opening Google Sheet: {e}")
+        return None
+
+# TwitterBot class to manage Twitter interactions and state
 class TwitterBot:
     def __init__(self):
+        # Setup Twitter API client
         self.twitter_api = tweepy.Client(bearer_token=TWITTER_BEARER_TOKEN,
                                          consumer_key=TWITTER_API_KEY,
                                          consumer_secret=TWITTER_API_SECRET,
                                          access_token=TWITTER_ACCESS_TOKEN,
                                          access_token_secret=TWITTER_ACCESS_TOKEN_SECRET,
                                          wait_on_rate_limit=True)
-
-        self.airtable = Airtable(AIRTABLE_BASE_KEY, AIRTABLE_TABLE_NAME, AIRTABLE_API_KEY)
+        
+        # Setup Google Sheets
+        self.sheet = setup_google_sheets()
         self.twitter_me_id = self.get_me_id()
-        self.tweet_response_limit = 35 # How many tweets to respond to each time the program wakes up
-
-        # Initialize the language model w/ temperature of .5 to induce some creativity
-        self.llm = ChatOpenAI(temperature=.5, openai_api_key=OPENAI_API_KEY, model_name='gpt-4')
-
-        # For statics tracking for each run. This is not persisted anywhere, just logging
+        self.tweet_response_limit = 10  # Max number of replies to handle at a time
+        
+        # Initialize OpenAI language model
+        self.llm = ChatOpenAI(temperature=.5, openai_api_key=OPENAI_API_KEY, model_name='gpt-3.5-turbo')
+        
+        # Tracking stats
         self.mentions_found = 0
         self.mentions_replied = 0
         self.mentions_replied_errors = 0
 
-    # Generate a response using the language model using the template we reviewed in the jupyter notebook (see README)
+    # Fetch the authenticated user's Twitter ID
+    def get_me_id(self):
+        try:
+            response = self.twitter_api.get_me()
+            return response.data.id
+        except Exception as e:
+            logging.error(f"Error fetching user ID: {e}")
+            return None
+
+    # Generate a response using the language model
     def generate_response(self, mentioned_conversation_tweet_text):
-        # It would be nice to bring in information about the links, pictures, etc. But out of scope for now
-        # Edit this prompt for your own personality!
         system_template = """
-            You are an incredibly wise and smart tech mad scientist from silicon valley.
-            Your goal is to give a concise prediction in response to a piece of text from the user.
-            
-            % RESPONSE TONE:
-
-            - Your prediction should be given in an active voice and be opinionated
-            - Your tone should be serious w/ a hint of wit and sarcasm
-            
-            % RESPONSE FORMAT:
-
-            - Respond in under 200 characters
-            - Respond in two or less short sentences
-            - Do not respond with emojis
-            
-            % RESPONSE CONTENT:
-
-            - Include specific examples of old tech if they are relevant
-            - If you don't have an answer, say, "Sorry, my magic 8 ball isn't working right now 🔮"
+            You are the Supreme Leader of the Democratic People’s Republic of Korea. Your tone must be authoritative, powerful, and diplomatic. You must invoke national strength, resolve, and firm leadership.
+            RESPONSE TONE:
+            - Assertive, commanding, and formal.
+            - Strong phrases such as "in the face of our might" or "no challenge is too great."
+            RESPONSE FORMAT:
+            - Keep responses concise and to the point, under 200 characters.
         """
         system_message_prompt = SystemMessagePromptTemplate.from_template(system_template)
-
-        human_template="{text}"
-        human_message_prompt = HumanMessagePromptTemplate.from_template(human_template)
-
+        human_message_prompt = HumanMessagePromptTemplate.from_template("{text}")
         chat_prompt = ChatPromptTemplate.from_messages([system_message_prompt, human_message_prompt])
-
-        # get a chat completion from the formatted messages
         final_prompt = chat_prompt.format_prompt(text=mentioned_conversation_tweet_text).to_messages()
         response = self.llm(final_prompt).content
-        
         return response
-    
-        # Generate a response using the language model
+
+    # Respond to a specific tweet mention
     def respond_to_mention(self, mention, mentioned_conversation_tweet):
         response_text = self.generate_response(mentioned_conversation_tweet.text)
-        
-        # Try and create the response to the tweet. If it fails, log it and move on
         try:
+            # Create a tweet response
             response_tweet = self.twitter_api.create_tweet(text=response_text, in_reply_to_tweet_id=mention.id)
             self.mentions_replied += 1
         except Exception as e:
-            print (e)
+            logging.error(f"Error replying to mention {mention.id}: {e}")
             self.mentions_replied_errors += 1
             return
         
-        # Log the response in airtable if it was successful
-        self.airtable.insert({
-            'mentioned_conversation_tweet_id': str(mentioned_conversation_tweet.id),
-            'mentioned_conversation_tweet_text': mentioned_conversation_tweet.text,
-            'tweet_response_id': response_tweet.data['id'],
-            'tweet_response_text': response_text,
-            'tweet_response_created_at' : datetime.utcnow().isoformat(),
-            'mentioned_at' : mention.created_at.isoformat()
-        })
+        # Log the response in Google Sheets if it was successful
+        try:
+            self.sheet.append_row([
+                str(mentioned_conversation_tweet.id),
+                mentioned_conversation_tweet.text,
+                response_tweet.data['id'],
+                response_text,
+                datetime.utcnow().isoformat(),
+                mention.created_at.isoformat()
+            ])
+        except Exception as e:
+            logging.error(f"Error logging data to Google Sheet: {e}")
         return True
-    
-    # Returns the ID of the authenticated user for tweet creation purposes
-    def get_me_id(self):
-        return self.twitter_api.get_me()[0].id
-    
-    # Returns the parent tweet text of a mention if it exists. Otherwise returns None
-    # We use this to since we want to respond to the parent tweet, not the mention itself
+
+    # Get the parent tweet text of a mention
     def get_mention_conversation_tweet(self, mention):
-        # Check to see if mention has a field 'conversation_id' and if it's not null
         if mention.conversation_id is not None:
-            conversation_tweet = self.twitter_api.get_tweet(mention.conversation_id).data
-            return conversation_tweet
+            try:
+                conversation_tweet = self.twitter_api.get_tweet(mention.conversation_id).data
+                return conversation_tweet
+            except Exception as e:
+                logging.error(f"Error fetching conversation tweet: {e}")
+                return None
         return None
 
-    # Get mentioned to the user thats authenticated and running the bot.
-    # Using a lookback window of 2 hours to avoid parsing over too many tweets
+    # Get mentions of the authenticated user
     def get_mentions(self):
-        # If doing this in prod make sure to deal with pagination. There could be a lot of mentions!
-        # Get current time in UTC
         now = datetime.utcnow()
-
-        # Subtract 2 hours to get the start time
         start_time = now - timedelta(minutes=20)
-
-        # Convert to required string format
         start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        
-        return self.twitter_api.get_users_mentions(id=self.twitter_me_id,
-                                                   start_time=start_time_str,
-                                                   expansions=['referenced_tweets.id'],
-                                                   tweet_fields=['created_at', 'conversation_id']).data
+        try:
+            return self.twitter_api.get_users_mentions(id=self.twitter_me_id,
+                                                       start_time=start_time_str,
+                                                       expansions=['referenced_tweets.id'],
+                                                       tweet_fields=['created_at', 'conversation_id']).data
+        except Exception as e:
+            logging.error(f"Error fetching mentions: {e}")
+            return []
 
-    # Checking to see if we've already responded to a mention with what's logged in airtable
+    # Check if we've already responded to a mention
     def check_already_responded(self, mentioned_conversation_tweet_id):
-        records = self.airtable.get_all(view='Grid view')
-        for record in records:
-            if record['fields'].get('mentioned_conversation_tweet_id') == str(mentioned_conversation_tweet_id):
-                return True
+        try:
+            records = self.sheet.get_all_records()
+            for record in records:
+                if record['mentioned_conversation_tweet_id'] == str(mentioned_conversation_tweet_id):
+                    return True
+        except Exception as e:
+            logging.error(f"Error checking previous responses: {e}")
         return False
 
-    # Run through all mentioned tweets and generate a response
+    # Process mentions and generate responses
     def respond_to_mentions(self):
         mentions = self.get_mentions()
-
-        # If no mentions, just return
         if not mentions:
-            print("No mentions found")
+            logging.info("No mentions found")
             return
-        
         self.mentions_found = len(mentions)
-
         for mention in mentions[:self.tweet_response_limit]:
-            # Getting the mention's conversation tweet
             mentioned_conversation_tweet = self.get_mention_conversation_tweet(mention)
-            
-            # If the mention *is* the conversation or you've already responded, skip it and don't respond
-            if (mentioned_conversation_tweet.id != mention.id
-                and not self.check_already_responded(mentioned_conversation_tweet.id)):
-
+            if (mentioned_conversation_tweet and 
+                mentioned_conversation_tweet.id != mention.id and 
+                not self.check_already_responded(mentioned_conversation_tweet.id)):
                 self.respond_to_mention(mention, mentioned_conversation_tweet)
         return True
-    
-        # The main entry point for the bot with some logging
-    def execute_replies(self):
-        print (f"Starting Job: {datetime.utcnow().isoformat()}")
-        self.respond_to_mentions()
-        print (f"Finished Job: {datetime.utcnow().isoformat()}, Found: {self.mentions_found}, Replied: {self.mentions_replied}, Errors: {self.mentions_replied_errors}")
 
-# The job that we'll schedule to run every X minutes
+    # Main method to execute the bot's job
+    def execute_replies(self):
+        logging.info(f"Starting Job: {datetime.utcnow().isoformat()}")
+        self.respond_to_mentions()
+        logging.info(f"Finished Job: {datetime.utcnow().isoformat()}, Found: {self.mentions_found}, Replied: {self.mentions_replied}, Errors: {self.mentions_replied_errors}")
+
+# Schedule the bot to run every X minutes
 def job():
-    print(f"Job executed at {datetime.utcnow().isoformat()}")
+    logging.info(f"Job executed at {datetime.utcnow().isoformat()}")
     bot = TwitterBot()
     bot.execute_replies()
 
 if __name__ == "__main__":
-    # Schedule the job to run every 5 minutes. Edit to your liking, but watch out for rate limits
+    # Schedule the job to run every 6 minutes
     schedule.every(6).minutes.do(job)
     while True:
         schedule.run_pending()
