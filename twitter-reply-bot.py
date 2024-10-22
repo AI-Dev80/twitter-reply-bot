@@ -1,14 +1,16 @@
-import gspread
-from google.oauth2.service_account import Credentials
-
+import os
+import base64
+import json
+import time
+import logging
 from datetime import datetime, timedelta
 import tweepy
+import gspread
+from google.oauth2.service_account import Credentials
 from langchain.chat_models import ChatOpenAI
-import schedule
-import logging
+from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from dotenv import load_dotenv
-import os
-import time
+import schedule
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
@@ -26,43 +28,31 @@ TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 # Load OpenAI API key from environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Load Google Sheets credentials and Google Sheet ID
-GOOGLE_SHEETS_CREDENTIALS = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH", "kibo-cre.json")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-
-# Setup Google Sheets API
+# Google Sheets Setup
 def setup_google_sheets():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_file(GOOGLE_SHEETS_CREDENTIALS, scopes=scope)
-    client = gspread.authorize(creds)
+    creds_base64 = os.getenv("GOOGLE_CREDENTIALS_BASE64")
+    creds_json = base64.b64decode(creds_base64).decode('utf-8')
+    creds_data = json.loads(creds_json)
+    credentials = Credentials.from_service_account_info(creds_data)
     
-    try:
-        # Open the Google Sheet using the Google Sheet ID
-        sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
-        return sheet
-    except Exception as e:
-        logging.error(f"Error opening Google Sheet: {e}")
-        return None
+    # Authorize Google Sheets API
+    client = gspread.authorize(credentials)
+    sheet = client.open_by_key(os.getenv("GOOGLE_SHEET_ID")).sheet1
+    return sheet
+
 # TwitterBot class to manage Twitter interactions and state
 class TwitterBot:
     def __init__(self):
-        # Setup Twitter API client
         self.twitter_api = tweepy.Client(bearer_token=TWITTER_BEARER_TOKEN,
                                          consumer_key=TWITTER_API_KEY,
                                          consumer_secret=TWITTER_API_SECRET,
                                          access_token=TWITTER_ACCESS_TOKEN,
                                          access_token_secret=TWITTER_ACCESS_TOKEN_SECRET,
                                          wait_on_rate_limit=True)
-        
-        # Setup Google Sheets
         self.sheet = setup_google_sheets()
         self.twitter_me_id = self.get_me_id()
-        self.tweet_response_limit = 10  # Max number of replies to handle at a time
-        
-        # Initialize OpenAI language model
+        self.tweet_response_limit = 10
         self.llm = ChatOpenAI(temperature=.5, openai_api_key=OPENAI_API_KEY, model_name='gpt-3.5-turbo')
-        
-        # Tracking stats
         self.mentions_found = 0
         self.mentions_replied = 0
         self.mentions_replied_errors = 0
@@ -79,25 +69,19 @@ class TwitterBot:
     # Generate a response using the language model
     def generate_response(self, mentioned_conversation_tweet_text):
         system_template = """
-            You are the Supreme Leader of the Democratic People’s Republic of Korea. Your tone must be authoritative, powerful, and diplomatic. You must invoke national strength, resolve, and firm leadership.
-            RESPONSE TONE:
-            - Assertive, commanding, and formal.
-            - Strong phrases such as "in the face of our might" or "no challenge is too great."
-            RESPONSE FORMAT:
-            - Keep responses concise and to the point, under 200 characters.
+            You are the Supreme Leader of the Democratic People’s Republic of Korea. Your tone must be authoritative, powerful, and diplomatic.
+            RESPONSE FORMAT: Keep responses concise and to the point, under 200 characters.
         """
         system_message_prompt = SystemMessagePromptTemplate.from_template(system_template)
         human_message_prompt = HumanMessagePromptTemplate.from_template("{text}")
         chat_prompt = ChatPromptTemplate.from_messages([system_message_prompt, human_message_prompt])
         final_prompt = chat_prompt.format_prompt(text=mentioned_conversation_tweet_text).to_messages()
-        response = self.llm(final_prompt).content
-        return response
+        return self.llm(final_prompt).content
 
     # Respond to a specific tweet mention
     def respond_to_mention(self, mention, mentioned_conversation_tweet):
         response_text = self.generate_response(mentioned_conversation_tweet.text)
         try:
-            # Create a tweet response
             response_tweet = self.twitter_api.create_tweet(text=response_text, in_reply_to_tweet_id=mention.id)
             self.mentions_replied += 1
         except Exception as e:
@@ -105,7 +89,6 @@ class TwitterBot:
             self.mentions_replied_errors += 1
             return
         
-        # Log the response in Google Sheets if it was successful
         try:
             self.sheet.append_row([
                 str(mentioned_conversation_tweet.id),
@@ -123,11 +106,9 @@ class TwitterBot:
     def get_mention_conversation_tweet(self, mention):
         if mention.conversation_id is not None:
             try:
-                conversation_tweet = self.twitter_api.get_tweet(mention.conversation_id).data
-                return conversation_tweet
+                return self.twitter_api.get_tweet(mention.conversation_id).data
             except Exception as e:
                 logging.error(f"Error fetching conversation tweet: {e}")
-                return None
         return None
 
     # Get mentions of the authenticated user
@@ -176,15 +157,14 @@ class TwitterBot:
         self.respond_to_mentions()
         logging.info(f"Finished Job: {datetime.utcnow().isoformat()}, Found: {self.mentions_found}, Replied: {self.mentions_replied}, Errors: {self.mentions_replied_errors}")
 
-# Schedule the bot to run every X minutes
+# Schedule the bot to run every 6 minutes
 def job():
     logging.info(f"Job executed at {datetime.utcnow().isoformat()}")
     bot = TwitterBot()
     bot.execute_replies()
 
 if __name__ == "__main__":
-    # Schedule the job to run every 6 minutes
-    schedule.every(0.1).minutes.do(job)
+    schedule.every(6).minutes.do(job)
     while True:
         schedule.run_pending()
         time.sleep(1)
