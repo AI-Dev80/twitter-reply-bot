@@ -164,7 +164,7 @@ def job():
     bot.execute_replies()
 
 if __name__ == "__main__":
-    schedule.every(6).minutes.do(job)
+    schedule.every(1).minutes.do(job)
     while True:
         schedule.run_pending()
         time.sleep(1)
